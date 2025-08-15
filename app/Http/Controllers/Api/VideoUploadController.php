@@ -55,44 +55,42 @@ class VideoUploadController extends Controller
         ]);
 
         $ext = strtolower(pathinfo($request->filename, PATHINFO_EXTENSION));
-
         if (!in_array($ext, $this->allowedExtensions)) {
             return response()->json(['error' => 'Format tidak didukung'], 415);
         }
 
         $uploadId = md5($request->filename);
-        $chunkDir = storage_path("app/chunks/{$uploadId}");
-        if (!is_dir($chunkDir)) {
-            mkdir($chunkDir, 0777, true);
+        $finalFileName = $uploadId . '.' . $ext;
+        $finalPath = $this->videoStorage . '/' . $finalFileName;
+
+        if ($request->index === 0 && file_exists($finalPath)) {
+            unlink($finalPath);
         }
 
-        $chunkPath = $chunkDir . '/' . $request->index;
-        $request->file('chunk')->move($chunkDir, $request->index);
+        if (!is_dir($this->videoStorage)) {
+            mkdir($this->videoStorage, 0777, true);
+        }
+
+        $out = fopen($finalPath, 'ab');
+        $in = fopen($request->file('chunk')->getPathname(), 'rb');
+        stream_copy_to_stream($in, $out);
+        fclose($in);
+        fclose($out);
 
         if ($request->index + 1 == $request->total) {
-            $finalFileName = uniqid() . '.' . $ext;
-            $finalPath = $this->videoStorage . '/' . $finalFileName;
-
-            if (!is_dir($this->videoStorage)) {
-                mkdir($this->videoStorage, 0777, true);
-            }
-
-            $output = fopen($finalPath, 'ab');
-            for ($i = 0; $i < $request->total; $i++) {
-                $chunkFile = $chunkDir . '/' . $i;
-                $input = fopen($chunkFile, 'rb');
-                stream_copy_to_stream($input, $output);
-                fclose($input);
-                unlink($chunkFile);
-            }
-            fclose($output);
-            rmdir($chunkDir);
+            $extension = strtolower(pathinfo($finalPath, PATHINFO_EXTENSION));
+            $mimeTypes = [
+                'mp4'  => 'video/mp4',
+                'webm' => 'video/webm',
+                'avi'  => 'video/x-msvideo',
+                'mov'  => 'video/quicktime',
+            ];
 
             $video = Video::create([
                 'title' => $request->title ?? 'Untitled Video',
                 'filename' => uniqid(),
                 'path' => "videos/{$finalFileName}",
-                'mime_type' => mime_content_type($finalPath),
+                'mime_type' => $mimeTypes[$extension] ?? 'application/octet-stream',
                 'size' => filesize($finalPath),
                 'status' => 1,
             ]);
