@@ -14,4 +14,3 @@ Route::get('/videos', [VideoUploadController::class, 'index']);
 Route::get('/videos/{id}', [VideoUploadController::class, 'show']);
 Route::get('/download/{filename}', [VideoUploadController::class, 'downloadByFilename']);
 Route::get('/stream/{filename}', [VideoUploadController::class, 'streamByFilename']);
-Route::get('/thumbnail/{filename}', [VideoUploadController::class, 'thumbnailByFilename']);

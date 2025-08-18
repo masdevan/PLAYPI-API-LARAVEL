@@ -14,6 +14,10 @@ return [
     |
     */
 
+    'safelink' => [
+        'token' => env('SAFELINK_TOKEN'),
+    ],
+
     'postmark' => [
         'token' => env('POSTMARK_TOKEN'),
     ],

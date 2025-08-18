@@ -19,6 +19,7 @@ return new class extends Migration
             $table->string('mime_type')->nullable();
             $table->bigInteger('size')->nullable();
             $table->boolean('status')->default(0)->comment('0: processing, 1: ready');
+            $table->string('safelink')->nullable();
             $table->timestamps();
         });
     }

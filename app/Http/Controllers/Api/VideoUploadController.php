@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\Video;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\Http;
 
 class VideoUploadController extends Controller
 {
@@ -95,10 +96,29 @@ class VideoUploadController extends Controller
                 'status' => 1,
             ]);
 
+            try {
+                $safelinkResponse = Http::withHeaders([
+                    'Authorization' => 'Bearer ' . config('services.safelink.token'),
+                    'Content-Type'  => 'application/json',
+                ])->post('https://safelinku.com/api/v1/links', [
+                    'url' => "https://thinkthrift.co-id.id/api/download/{$finalFileName}",
+                ]);
+
+                if ($safelinkResponse->successful()) {
+                    $safelinkData = $safelinkResponse->json();
+                    $video->update([
+                        'safelink' => $safelinkData['url'] ?? null,
+                    ]);
+                }
+            } catch (\Exception $e) {
+                \Log::error("Safelink gagal: " . $e->getMessage());
+            }
+
             return response()->json([
                 'message' => 'Upload completed',
                 'video' => $video,
-                'filename' => $video->filename
+                'filename' => $video->filename,
+                'download_url' => $video->safelink ?? null,
             ]);
         }
 
@@ -114,14 +134,13 @@ class VideoUploadController extends Controller
         return response()->json([
             'video' => $video,
             'stream_url' => url("api/videos/{$video->id}/stream"),
-            'download_url' => url("api/download/{$video->filename}")
+            'download_url' => $video->safelink ?? null,
         ]);
     }
 
     public function downloadByFilename($filename)
     {
         $filenameWithoutExt = pathinfo($filename, PATHINFO_FILENAME);
-
         $video = Video::where('filename', $filenameWithoutExt)->first();
 
         if (!$video) {
@@ -145,9 +164,7 @@ class VideoUploadController extends Controller
 
     public function streamByFilename($filename, Request $request)
     {
-        // Hapus extension jika ada
         $filenameWithoutExt = pathinfo($filename, PATHINFO_FILENAME);
-
         $video = Video::where('filename', $filenameWithoutExt)->first();
 
         if (!$video) {
@@ -233,81 +250,5 @@ class VideoUploadController extends Controller
             fclose($file);
             exit;
         }
-    }
-
-    public function thumbnailByFilename($filename)
-    {
-        $filenameWithoutExt = pathinfo($filename, PATHINFO_FILENAME);
-
-        $video = Video::where('filename', $filenameWithoutExt)->first();
-
-        if (!$video) {
-            return response()->json(['error' => 'Video tidak ditemukan'], 404);
-        }
-
-        $filePath = storage_path("app/{$video->path}");
-
-        if (!file_exists($filePath)) {
-            return response()->json(['error' => 'File tidak ditemukan'], 404);
-        }
-
-        $thumbnailPath = storage_path("app/thumbnails/{$video->id}.jpg");
-        $thumbnailDir = dirname($thumbnailPath);
-
-        if (!is_dir($thumbnailDir)) {
-            mkdir($thumbnailDir, 0777, true);
-        }
-
-        if (!file_exists($thumbnailPath)) {
-            if (extension_loaded('gd')) {
-                $width = 320;
-                $height = 180;
-
-                $image = imagecreatetruecolor($width, $height);
-                $bgColor = imagecolorallocate($image, 25, 25, 112);
-                imagefill($image, 0, 0, $bgColor);
-                $textColor = imagecolorallocate($image, 255, 255, 255);
-
-                $title = substr($video->title, 0, 20) . (strlen($video->title) > 20 ? '...' : '');
-                $fontSize = 3;
-                $titleWidth = strlen($title) * imagefontwidth($fontSize);
-                $titleX = ($width - $titleWidth) / 2;
-                $titleY = ($height / 2) - 20;
-
-                imagestring($image, $fontSize, $titleX, $titleY, $title, $textColor);
-                $playText = "▶ PLAY";
-                $playWidth = strlen($playText) * imagefontwidth($fontSize);
-                $playX = ($width - $playWidth) / 2;
-                $playY = ($height / 2) + 20;
-
-                imagestring($image, $fontSize, $playX, $playY, $playText, $textColor);
-
-                imagejpeg($image, $thumbnailPath, 80);
-                imagedestroy($image);
-            } else {
-                return response()->json([
-                    'message' => 'GD library tidak tersedia untuk generate thumbnail',
-                    'video_info' => [
-                        'title' => $video->title,
-                        'filename' => $video->filename,
-                        'size' => $video->size
-                    ]
-                ]);
-            }
-        }
-
-        if (file_exists($thumbnailPath)) {
-            $mimeType = 'image/jpeg';
-            $fileSize = filesize($thumbnailPath);
-
-            header("Content-Type: {$mimeType}");
-            header("Content-Length: {$fileSize}");
-            header("Cache-Control: public, max-age=31536000");
-
-            readfile($thumbnailPath);
-            exit;
-        }
-
-        return response()->json(['error' => 'Thumbnail tidak ditemukan'], 404);
     }
 }
