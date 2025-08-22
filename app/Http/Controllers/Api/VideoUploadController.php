@@ -115,8 +115,10 @@ class VideoUploadController extends Controller
             }
 
             return response()->json([
+                'share_url' => rtrim(config('app.frontend_url'), '/') . "/video/{$video->id}",
                 'message' => 'Upload completed',
                 'video' => $video,
+                'title' => $video->title,
                 'filename' => $video->filename,
                 'download_url' => $video->safelink ?? null,
             ]);
@@ -132,7 +134,9 @@ class VideoUploadController extends Controller
         $video = Video::findOrFail($id);
 
         return response()->json([
+            'share_url' => rtrim(config('app.frontend_url'), '/') . "/video/{$video->id}",
             'video' => $video,
+            'title' => $video->title,
             'stream_url' => url("api/videos/{$video->id}/stream"),
             'download_url' => $video->safelink ?? null,
         ]);
