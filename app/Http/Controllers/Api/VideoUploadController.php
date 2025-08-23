@@ -10,11 +10,14 @@ use Illuminate\Support\Facades\Http;
 class VideoUploadController extends Controller
 {
     private array $allowedExtensions = ['mp4', 'webm', 'avi', 'mov'];
+    private array $allowedImageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
     private string $videoStorage;
+    private string $imageStorage;
 
     public function __construct()
     {
         $this->videoStorage = storage_path('app/videos');
+        $this->imageStorage = storage_path('app/images');
     }
 
     public function index(Request $request)
@@ -25,9 +28,26 @@ class VideoUploadController extends Controller
         $videos = Video::orderBy('created_at', 'desc')
             ->paginate($perPage, ['*'], 'page', $page);
 
+        if ($videos->isEmpty()) {
+            return response()->json([
+                'videos' => [],
+                'message' => 'Tidak ada video yang ditemukan',
+                'pagination' => [
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'per_page' => $perPage,
+                    'total' => 0,
+                    'has_more_pages' => false,
+                    'next_page_url' => null,
+                    'prev_page_url' => null
+                ]
+            ]);
+        }
+
         $videosWithPreview = $videos->getCollection()->map(function ($video) {
             $video->preview_url = url("api/stream/{$video->filename}");
             $video->thumbnail_url = url("api/thumbnail/{$video->filename}");
+            $video->image_url = $video->image_path ? url("api/images/" . basename($video->image_path)) : null;
             return $video;
         });
 
@@ -52,7 +72,8 @@ class VideoUploadController extends Controller
             'index' => 'required|integer',
             'total' => 'required|integer',
             'filename' => 'required|string',
-            'title' => 'nullable|string'
+            'title' => 'nullable|string',
+            'image' => 'nullable|file|mimes:jpg,jpeg,png,gif,webp|max:2048'
         ]);
 
         $ext = strtolower(pathinfo($request->filename, PATHINFO_EXTENSION));
@@ -87,6 +108,22 @@ class VideoUploadController extends Controller
                 'mov'  => 'video/quicktime',
             ];
 
+            $imagePath = null;
+            if ($request->hasFile('image')) {
+                $image = $request->file('image');
+                $imageExt = strtolower($image->getClientOriginalExtension());
+
+                if (in_array($imageExt, $this->allowedImageExtensions)) {
+                    if (!is_dir($this->imageStorage)) {
+                        mkdir($this->imageStorage, 0777, true);
+                    }
+
+                    $imageFileName = uniqid() . '.' . $imageExt;
+                    $imagePath = "images/{$imageFileName}";
+                    $image->move($this->imageStorage, $imageFileName);
+                }
+            }
+
             $video = Video::create([
                 'title' => $request->title ?? 'Untitled Video',
                 'filename' => uniqid(),
@@ -94,6 +131,7 @@ class VideoUploadController extends Controller
                 'mime_type' => $mimeTypes[$extension] ?? 'application/octet-stream',
                 'size' => filesize($finalPath),
                 'status' => 1,
+                'image_path' => $imagePath,
             ]);
 
             try {
@@ -121,6 +159,7 @@ class VideoUploadController extends Controller
                 'title' => $video->title,
                 'filename' => $video->filename,
                 'download_url' => $video->safelink ?? null,
+                'image_url' => $imagePath ? url("api/images/" . basename($imagePath)) : null,
             ]);
         }
 
@@ -254,5 +293,30 @@ class VideoUploadController extends Controller
             fclose($file);
             exit;
         }
+    }
+
+    public function serveImage($filename)
+    {
+        $filePath = $this->imageStorage . '/' . $filename;
+
+        if (!file_exists($filePath)) {
+            return response()->json(['error' => 'Image tidak ditemukan'], 404);
+        }
+
+        $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+        $mimeTypes = [
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png'  => 'image/png',
+            'gif'  => 'image/gif',
+            'webp' => 'image/webp',
+        ];
+
+        $mimeType = $mimeTypes[$extension] ?? 'application/octet-stream';
+
+        return response()->file($filePath, [
+            'Content-Type' => $mimeType,
+            'Cache-Control' => 'public, max-age=31536000'
+        ]);
     }
 }

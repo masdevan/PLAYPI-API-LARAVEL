@@ -17,6 +17,7 @@ return new class extends Migration
             $table->string('filename');
             $table->string('path');
             $table->string('mime_type')->nullable();
+            $table->string('image_path')->nullable();
             $table->bigInteger('size')->nullable();
             $table->boolean('status')->default(0)->comment('0: processing, 1: ready');
             $table->string('safelink')->nullable();
