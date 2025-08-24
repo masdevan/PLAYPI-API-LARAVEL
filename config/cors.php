@@ -19,9 +19,9 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['https://playpi.space', 'http://localhost:3000'],
+    'allowed_origins' => ['*'],
 
-    'allowed_origins_patterns' => ['/^https?:\/\/([a-z0-9-]+\.)?playpi\.space$/'],
+    'allowed_origins_patterns' => [],
 
     'allowed_headers' => ['*'],
 
