@@ -31,7 +31,7 @@ jobs:
             git clean -fd
 
             git pull origin main
-            composer install
+            composer update
             php artisan migrate
             php artisan optimize:clear
             php artisan queue:restart || true
