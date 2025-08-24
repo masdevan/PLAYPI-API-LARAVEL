@@ -1,0 +1,39 @@
+name: Deploy via SSH
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -e
+            set -o pipefail
+
+            cd /var/www/playpi-api
+
+            git reset --hard
+            git clean -fd
+
+            git pull origin main
+            composer install
+            php artisan migrate
+            php artisan optimize:clear
+            php artisan queue:restart || true
+
+            echo "Deploy Finished..."
