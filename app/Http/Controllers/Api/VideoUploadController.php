@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\Video;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 
 class VideoUploadController extends Controller
 {
@@ -45,10 +47,11 @@ class VideoUploadController extends Controller
         }
 
         $videosWithPreview = $videos->getCollection()->map(function ($video) {
-            $video->preview_url = url("api/stream/{$video->filename}");
-            $video->thumbnail_url = url("api/thumbnail/{$video->filename}");
-            $video->image_url = $video->image_path ? url("api/images/" . basename($video->image_path)) : null;
-            return $video;
+
+            $videoArray = $video->toArray();
+            $videoArray['preview_url'] = $this->getVideoSignedUrl($video);
+            $videoArray['image_url'] = $this->getImageSignedUrl($video);
+            return $videoArray;
         });
 
         return response()->json([
@@ -108,30 +111,51 @@ class VideoUploadController extends Controller
                 'mov'  => 'video/quicktime',
             ];
 
+
+            $videoPath = "videos/{$finalFileName}";
+            $videoContent = file_get_contents($finalPath);
+            Storage::disk('wasabi')->put($videoPath, $videoContent);
+
+
+            $videoSignedUrlData = $this->generateVideoSignedUrl($videoPath);
+            $videoSignedUrl = $videoSignedUrlData['url'];
+            $videoExpiresAt = $videoSignedUrlData['expires_at'];
+
             $imagePath = null;
+            $imageSignedUrl = null;
+            $imageExpiresAt = null;
+
             if ($request->hasFile('image')) {
                 $image = $request->file('image');
                 $imageExt = strtolower($image->getClientOriginalExtension());
 
                 if (in_array($imageExt, $this->allowedImageExtensions)) {
-                    if (!is_dir($this->imageStorage)) {
-                        mkdir($this->imageStorage, 0777, true);
-                    }
-
                     $imageFileName = uniqid() . '.' . $imageExt;
                     $imagePath = "images/{$imageFileName}";
-                    $image->move($this->imageStorage, $imageFileName);
+
+
+                    $imageContent = file_get_contents($image->getPathname());
+                    Storage::disk('wasabi')->put($imagePath, $imageContent);
+
+
+                    $signedUrlData = $this->generateImageSignedUrl($imagePath);
+                    $imageSignedUrl = $signedUrlData['url'];
+                    $imageExpiresAt = $signedUrlData['expires_at'];
                 }
             }
 
             $video = Video::create([
                 'title' => $request->title ?? 'Untitled Video',
                 'filename' => uniqid(),
-                'path' => "videos/{$finalFileName}",
+                'path' => $videoPath,
                 'mime_type' => $mimeTypes[$extension] ?? 'application/octet-stream',
                 'size' => filesize($finalPath),
                 'status' => 1,
                 'image_path' => $imagePath,
+                'image_signed_url' => $imageSignedUrl,
+                'image_expires_at' => $imageExpiresAt,
+                'video_signed_url' => $videoSignedUrl,
+                'video_expires_at' => $videoExpiresAt,
             ]);
 
             try {
@@ -139,7 +163,7 @@ class VideoUploadController extends Controller
                     'Authorization' => 'Bearer ' . config('services.safelink.token'),
                     'Content-Type'  => 'application/json',
                 ])->post('https://safelinku.com/api/v1/links', [
-                    'url' => "https://thinkthrift.co-id.id/api/download/{$finalFileName}",
+                    'url' => "https://api.playpi.space/api/download/{$finalFileName}",
                 ]);
 
                 if ($safelinkResponse->successful()) {
@@ -149,7 +173,12 @@ class VideoUploadController extends Controller
                     ]);
                 }
             } catch (\Exception $e) {
-                \Log::error("Safelink gagal: " . $e->getMessage());
+                Log::error("Safelink gagal: " . $e->getMessage());
+            }
+
+
+            if (file_exists($finalPath)) {
+                unlink($finalPath);
             }
 
             return response()->json([
@@ -159,7 +188,8 @@ class VideoUploadController extends Controller
                 'title' => $video->title,
                 'filename' => $video->filename,
                 'download_url' => $video->safelink ?? null,
-                'image_url' => $imagePath ? url("api/images/" . basename($imagePath)) : null,
+                'thumbnail_url' => $this->getImageSignedUrl($video),
+                'video_url' => $this->getVideoSignedUrl($video),
             ]);
         }
 
@@ -176,8 +206,9 @@ class VideoUploadController extends Controller
             'share_url' => rtrim(config('app.frontend_url'), '/') . "/video/{$video->id}",
             'video' => $video,
             'title' => $video->title,
-            'stream_url' => url("api/videos/{$video->id}/stream"),
+            'stream_url' => $this->getVideoSignedUrl($video),
             'download_url' => $video->safelink ?? null,
+            'thumbnail_url' => $this->getImageSignedUrl($video),
         ]);
     }
 
@@ -190,19 +221,30 @@ class VideoUploadController extends Controller
             return response()->json(['error' => 'Video tidak ditemukan'], 404);
         }
 
-        $filePath = storage_path("app/{$video->path}");
 
-        if (!file_exists($filePath)) {
+        if (!Storage::disk('wasabi')->exists($video->path)) {
             return response()->json(['error' => 'File tidak ditemukan'], 404);
         }
 
-        $fileExtension = pathinfo($filePath, PATHINFO_EXTENSION);
-        $downloadFilename = $video->filename . '.' . $fileExtension;
 
-        return response()->download($filePath, $downloadFilename, [
-            'Content-Type' => $video->mime_type,
-            'Content-Disposition' => 'attachment; filename="' . $downloadFilename . '"'
-        ]);
+        try {
+            $signedUrl = Storage::disk('wasabi')->temporaryUrl(
+                $video->path,
+                now()->addMinutes(5),
+                [
+                    'ResponseContentType' => $video->mime_type,
+                    'ResponseContentDisposition' => 'attachment; filename="' . $video->filename . '.' . pathinfo($video->path, PATHINFO_EXTENSION) . '"'
+                ]
+            );
+
+            return response()->json([
+                'download_url' => $signedUrl,
+                'expires_in' => '5 minutes'
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Failed to generate download URL: " . $e->getMessage());
+            return response()->json(['error' => 'Gagal membuat URL download'], 500);
+        }
     }
 
     public function streamByFilename($filename, Request $request)
@@ -214,109 +256,189 @@ class VideoUploadController extends Controller
             return response()->json(['error' => 'Video tidak ditemukan'], 404);
         }
 
-        $filePath = storage_path("app/{$video->path}");
 
-        if (!file_exists($filePath)) {
+        if (!Storage::disk('wasabi')->exists($video->path)) {
             return response()->json(['error' => 'File tidak ditemukan'], 404);
         }
 
-        $fileSize = filesize($filePath);
-        $range = $request->header('Range');
 
-        if ($range) {
-            $ranges = array_map('trim', explode('=', $range));
-            $ranges = array_map('trim', explode('-', $ranges[1]));
+        try {
+            $signedUrl = Storage::disk('wasabi')->temporaryUrl(
+                $video->path,
+                now()->addHour(),
+                [
+                    'ResponseContentType' => $video->mime_type,
+                    'ResponseContentDisposition' => 'inline'
+                ]
+            );
 
-            $start = $ranges[0];
-            $end = $ranges[1] ?: $fileSize - 1;
-
-            $length = $end - $start + 1;
-
-            $file = fopen($filePath, 'rb');
-            fseek($file, $start);
-
-            $buffer = 1024 * 8;
-            $sent = 0;
-
-            header('HTTP/1.1 206 Partial Content');
-            header("Accept-Ranges: bytes");
-            header("Content-Range: bytes {$start}-{$end}/{$fileSize}");
-            header("Content-Length: {$length}");
-            header("Content-Type: {$video->mime_type}");
-            header("Cache-Control: public, max-age=31536000");
-
-            while (!feof($file) && $sent < $length) {
-                $remaining = $length - $sent;
-                $chunkSize = min($buffer, $remaining);
-                $chunk = fread($file, $chunkSize);
-
-                if ($chunk === false) {
-                    break;
-                }
-
-                echo $chunk;
-                $sent += strlen($chunk);
-
-                if (ob_get_level()) {
-                    ob_flush();
-                }
-                flush();
-            }
-
-            fclose($file);
-            exit;
-        } else {
-            $file = fopen($filePath, 'rb');
-
-            header("Content-Type: {$video->mime_type}");
-            header("Content-Length: {$fileSize}");
-            header("Accept-Ranges: bytes");
-            header("Cache-Control: public, max-age=31536000");
-
-            $buffer = 1024 * 8;
-
-            while (!feof($file)) {
-                $chunk = fread($file, $buffer);
-
-                if ($chunk === false) {
-                    break;
-                }
-
-                echo $chunk;
-
-                if (ob_get_level()) {
-                    ob_flush();
-                }
-                flush();
-            }
-
-            fclose($file);
-            exit;
+            return response()->json([
+                'stream_url' => $signedUrl,
+                'expires_in' => '1 hour'
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Failed to generate stream URL: " . $e->getMessage());
+            return response()->json(['error' => 'Gagal membuat URL streaming'], 500);
         }
+    }
+
+    private function generateImageSignedUrl($imagePath)
+    {
+        try {
+
+            $signedUrl = Storage::disk('wasabi')->temporaryUrl(
+                $imagePath,
+                now()->addHour(),
+                ['ResponseContentType' => 'image/*']
+            );
+
+            return [
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()
+            ];
+        } catch (\Exception $e) {
+            Log::error("Failed to generate signed URL for image: " . $e->getMessage());
+            return [
+                'url' => null,
+                'expires_at' => null
+            ];
+        }
+    }
+
+    private function generateVideoSignedUrl($videoPath)
+    {
+        try {
+
+            $signedUrl = Storage::disk('wasabi')->temporaryUrl(
+                $videoPath,
+                now()->addHour(),
+                ['ResponseContentType' => 'video/*']
+            );
+
+            return [
+                'url' => $signedUrl,
+                'expires_at' => now()->addHour()
+            ];
+        } catch (\Exception $e) {
+            Log::error("Failed to generate signed URL for video: " . $e->getMessage());
+            return [
+                'url' => null,
+                'expires_at' => null
+            ];
+        }
+    }
+
+    private function getImageSignedUrl($video)
+    {
+        if (!$video->image_path) {
+            return null;
+        }
+
+
+        if ($video->image_signed_url && $video->image_expires_at) {
+
+            $expiresAt = $video->image_expires_at instanceof \Carbon\Carbon
+                ? $video->image_expires_at
+                : \Carbon\Carbon::parse($video->image_expires_at);
+
+            if ($expiresAt->isFuture()) {
+                return $video->image_signed_url;
+            }
+        }
+
+
+        $signedUrlData = $this->generateImageSignedUrl($video->image_path);
+
+        if ($signedUrlData['url']) {
+
+            $video->update([
+                'image_signed_url' => $signedUrlData['url'],
+                'image_expires_at' => $signedUrlData['expires_at']
+            ]);
+
+            return $signedUrlData['url'];
+        }
+
+        return null;
+    }
+
+    private function getVideoSignedUrl($video)
+    {
+        if (!$video->path) {
+            return null;
+        }
+
+
+        if ($video->video_signed_url && $video->video_expires_at) {
+
+            $expiresAt = $video->video_expires_at instanceof \Carbon\Carbon
+                ? $video->video_expires_at
+                : \Carbon\Carbon::parse($video->video_expires_at);
+
+            if ($expiresAt->isFuture()) {
+                return $video->video_signed_url;
+            }
+        }
+
+
+        $signedUrlData = $this->generateVideoSignedUrl($video->path);
+
+        if ($signedUrlData['url']) {
+
+            $video->update([
+                'video_signed_url' => $signedUrlData['url'],
+                'video_expires_at' => $signedUrlData['expires_at']
+            ]);
+
+            return $signedUrlData['url'];
+        }
+
+        return null;
     }
 
     public function serveImage($filename)
     {
-        $filePath = $this->imageStorage . '/' . $filename;
 
-        if (!file_exists($filePath)) {
-            return response()->json(['error' => 'Image tidak ditemukan'], 404);
+        $localFilePath = $this->imageStorage . '/' . $filename;
+
+        if (file_exists($localFilePath)) {
+            $extension = strtolower(pathinfo($localFilePath, PATHINFO_EXTENSION));
+            $mimeTypes = [
+                'jpg'  => 'image/jpeg',
+                'jpeg' => 'image/jpeg',
+                'png'  => 'image/png',
+                'gif'  => 'image/gif',
+                'webp' => 'image/webp',
+            ];
+
+            $mimeType = $mimeTypes[$extension] ?? 'application/octet-stream';
+
+            return response()->file($localFilePath, [
+                'Content-Type' => $mimeType,
+                'Cache-Control' => 'public, max-age=31536000'
+            ]);
         }
 
-        $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
-        $mimeTypes = [
-            'jpg'  => 'image/jpeg',
-            'jpeg' => 'image/jpeg',
-            'png'  => 'image/png',
-            'gif'  => 'image/gif',
-            'webp' => 'image/webp',
-        ];
 
-        $mimeType = $mimeTypes[$extension] ?? 'application/octet-stream';
+        $wasabiPath = "images/{$filename}";
 
-        return response()->file($filePath, [
-            'Content-Type' => $mimeType,
-            'Cache-Control' => 'public, max-age=31536000'
-        ]);
+        if (Storage::disk('wasabi')->exists($wasabiPath)) {
+            try {
+                $signedUrl = Storage::disk('wasabi')->temporaryUrl(
+                    $wasabiPath,
+                    now()->addHour(),
+                    ['ResponseContentType' => 'image/*']
+                );
+
+                return response()->json([
+                    'image_url' => $signedUrl
+                ]);
+            } catch (\Exception $e) {
+                Log::error("Failed to generate signed URL for image: " . $e->getMessage());
+                return response()->json(['error' => 'Image tidak ditemukan'], 404);
+            }
+        }
+
+        return response()->json(['error' => 'Image tidak ditemukan'], 404);
     }
 }

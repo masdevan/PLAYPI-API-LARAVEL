@@ -60,6 +60,19 @@ return [
             'report' => false,
         ],
 
+        'wasabi' => [
+            'driver' => 's3',
+            'key' => env('WASABI_ACCESS_KEY_ID'),
+            'secret' => env('WASABI_SECRET_ACCESS_KEY'),
+            'region' => env('WASABI_DEFAULT_REGION', 'us-east-1'),
+            'bucket' => env('WASABI_BUCKET'),
+            'url' => env('WASABI_URL'),
+            'endpoint' => env('WASABI_ENDPOINT', 'https://s3.us-east-1.wasabisys.com'),
+            'use_path_style_endpoint' => env('WASABI_USE_PATH_STYLE_ENDPOINT', false),
+            'throw' => false,
+            'report' => false,
+        ],
+
     ],
 
     /*
